@@ -1,59 +1,146 @@
-# Overview
-This repository contains a React frontend, and an Express backend that the frontend connects to.
+# Tech Challenge 1 — Containerized React/Express App on AWS ECS Fargate
 
-# Objective
-Deploy the frontend and backend to somewhere publicly accessible over the internet. The AWS Free Tier should be more than sufficient to run this project, but you may use any platform and tooling you'd like for your solution.
+A React frontend and Express backend, containerized with Docker, deployed to AWS ECS on Fargate via Terraform, with CI/CD automated through a self-hosted Jenkins pipeline. The app autoscales under load and is reachable through a single public Application Load Balancer (ALB) URL.
 
-Fork this repo as a base. You may change any code in this repository to suit the infrastructure you build in this code challenge.
+**Live app:** http://tech-challenge-1-alb-62754989.us-east-1.elb.amazonaws.com
+**Jenkins:** http://18.235.167.253:8080
 
-# Submission
-1. A github repo that has been forked from this repo with all your code.
-2. Modify this README file with instructions for:
-* Any tools needed to deploy your infrastructure
-* All the steps needed to repeat your deployment process
-* URLs to the your deployed frontend.
+---
 
-# Evaluation
-You will be evaluated on the ease to replicate your infrastructure. This is a combination of quality of the instructions, as well as any scripts to automate the overall setup process.
+## 1. Architecture Overview
 
-# Setup your environment
-Install nodejs. Binaries and installers can be found on nodejs.org.
-https://nodejs.org/en/download/
-
-For macOS or Linux, Nodejs can usually be found in your preferred package manager.
-https://nodejs.org/en/download/package-manager/
-
-Depending on the Linux distribution, the Node Package Manager `npm` may need to be installed separately.
-
-# Running the project
-The backend and the frontend will need to run on separate processes. The backend should be started first.
 ```
+GitHub (main branch)
+      |
+      | webhook (push)
+      v
+Jenkins (EC2, Docker-in-Docker)
+      |
+      | build images -> push to ECR -> force new ECS deployment
+      v
+Amazon ECR (frontend + backend repos)
+      |
+      v
+Amazon ECS Cluster (Fargate)
+  |-- Frontend Service (min 1 / desired 1 / max 4 tasks)
+  |-- Backend  Service (min 1 / desired 1 / max 4 tasks)
+      |
+      v
+Application Load Balancer (public, port 80)
+  |-- default action        -> Frontend target group
+  |-- path pattern /api,/api/* -> Backend target group
+```
+
+- **ECS Fargate** runs both services — no EC2 instances to patch or manage for the app itself, AWS handles the underlying compute.
+- **Each service**: 0.5 vCPU / 1 GB RAM per task, runs in private subnets (not directly internet-reachable — only the ALB is public).
+- **Networking**: custom VPC, 2 public subnets (ALB + NAT Gateway) + 2 private subnets (ECS tasks), Internet Gateway for public traffic, NAT Gateway so private-subnet tasks can still reach the internet (e.g. to pull images).
+- **Autoscaling**: AWS Application Auto Scaling, target-tracking policy on ECS Service Average CPU Utilization, target = 50%. AWS automatically raises/lowers `DesiredCount` between 1 and 4 tasks to hold CPU near that target — no manual step scaling rules to maintain.
+- **CI/CD**: Jenkins (self-managed, running as a Docker container on its own EC2 instance) — not built with Terraform, since a CI server is treated as long-lived infrastructure that's configured once by hand rather than reprovisioned on every apply. Jenkins builds both Docker images, pushes them to ECR, then forces a new ECS deployment so the services pick up the new images.
+- **CORS**: the backend's `config.js` allow-list is set to the ALB's public DNS name, since the frontend and backend are served from different paths on the same load balancer and the browser enforces CORS on cross-origin API calls.
+
+---
+
+## 2. Repository Layout
+
+```
+.
+├── backend/            # Express API (Node 16), Dockerfile, config.js
+├── frontend/           # React app (Node 18), Dockerfile, config.js
+├── terraform/          # All AWS infrastructure as code
+│   ├── provider.tf
+│   ├── networking.tf
+│   ├── ecs.tf
+│   ├── ecr.tf
+│   ├── security.tf
+│   ├── alb.tf
+│   ├── autoscaling.tf
+│   ├── jenkins.tf
+│   └── variables.tf
+├── Jenkinsfile          # CI/CD pipeline definition (main branch)
+└── README.md
+```
+
+---
+
+## 3. Running It Locally
+
+```bash
+# Backend
 cd backend
 npm ci
-npm start
-```
-The backend should response to a GET request on `localhost:8080`.
+npm start                # runs on localhost:8080
 
-With the backend started, the frontend can be started.
-```
+# Frontend (separate terminal)
 cd frontend
 npm ci
-npm start
+npm start                # runs on localhost:3000, calls localhost:8080
 ```
-The frontend can be accessed at `localhost:3000`. If the frontend successfully connects to the backend, a message saying "SUCCESS" followed by a guid should be displayed on the screen.  If the connection failed, an error message will be displayed on the screen.
 
-# Configuration
-The frontend has a configuration file at `frontend/src/config.js` that defines the URL to call the backend. This URL is used on `frontend/src/App.js#12`, where the front end will make the GET call during the initial load of the page.
+Or with Docker:
 
-The backend has a configuration file at `backend/config.js` that defines the host that the frontend will be calling from. This URL is used in the `Access-Control-Allow-Origin` CORS header, read in `backend/index.js#14`
+```bash
+docker build -t backend-app ./backend
+docker build -t frontend-app ./frontend
+docker run -d --name backend  -p 8080:8080 backend-app
+docker run -d --name frontend -p 3000:3000 frontend-app
+```
 
-# Optional Extras
-The core requirement for this challenge is to get the provided application up and running for consumption over the public internet. That being said, there are some opportunities in this code challenge to demonstrate your skill sets that are above and beyond the core requirement.
+Both should return a page showing `SUCCESS` and a GUID when working correctly.
 
-A few examples of extras for this coding challenge:
-1. Dockerizing the application
-2. Scripts to set up the infrastructure
-3. Providing a pipeline for the application deployment
-4. Running the application in a serverless environment
+---
 
-This is not an exhaustive list of extra features that could be added to this code challenge. At the end of the day, this section is for you to demonstrate any skills you want to show that’s not captured in the core requirement.
+## 4. Deploying the Infrastructure (Terraform)
+
+```bash
+cd terraform
+terraform init
+terraform plan  -var="my_ip=<your-ip>/32"
+terraform apply -var="my_ip=<your-ip>/32"
+```
+
+This provisions, in order: the VPC and subnets, ECR repositories, IAM roles, security groups, the ECS cluster/services/task definitions, the ALB and its listener rules, the autoscaling policies, and the Jenkins EC2 instance (with an attached Elastic IP so its public address survives a stop/start).
+
+**Note:** `.terraform/` and `*.tfstate` are git-ignored — state is never committed.
+
+---
+
+## 5. Jenkins & CI/CD Pipeline
+
+Jenkins runs as a Docker container on a dedicated EC2 instance (Amazon Linux 2023, `t3.small`), provisioned once by hand rather than through Terraform recreations, since a CI server is meant to persist across infrastructure changes to the app itself.
+
+**Pipeline (`Jenkinsfile`), triggered by a GitHub webhook on every push to `main`:**
+1. Checkout the repo
+2. Build the backend and frontend Docker images
+3. Authenticate to Amazon ECR
+4. Tag and push both images
+5. Force a new deployment on both ECS services, so they pull the freshly pushed images
+
+This means a plain `git push` to `main` is the entire deploy trigger — no manual AWS Console steps required after the initial setup.
+
+---
+
+## 6. Load Testing & Autoscaling Results
+
+Load was generated from a local machine using [siege](https://github.com/JoeDog/siege), which drives raw concurrent HTTP requests against the public ALB URL:
+
+```bash
+siege -c 250 -t 5M http://tech-challenge-1-alb-62754989.us-east-1.elb.amazonaws.com
+```
+
+**Results:**
+- 27,755 hits, 99.81% availability, ~92.4 transactions/sec sustained over the run
+- The **frontend** ECS service scaled from 1 task up to its configured **max of 4 tasks**, all healthy in the ALB target group, as CPU utilization stayed above the 50% target
+- The **backend** service correctly stayed at 1 task throughout — `siege` performs raw HTTP GETs and does not execute the frontend's client-side JavaScript, so it never triggers the frontend's `fetch('/api')` call that would put load on the backend. This is an expected property of the test tool, not a defect in the autoscaling configuration.
+- After load stopped, the frontend service scaled back down to 1 task automatically once average CPU dropped back below target — no manual intervention needed in either direction.
+
+---
+
+## 7. GitOps Branch (Bonus)
+
+A separate `gitops` branch replaces the Jenkins-triggered pipeline with GitHub Actions, using an OIDC identity provider so GitHub Actions can assume a scoped AWS IAM role without any long-lived AWS access keys stored in GitHub. See that branch's own workflow file for details.
+
+---
+
+## 8. Cleanup
+
+To avoid ongoing AWS charges after grading: `terraform destroy` from the `terraform/` directory, plus manual removal of the Jenkins EC2 instance's EBS volume and Elastic IP if not fully covered by destroy, and manual removal of any leftover ECR images.
