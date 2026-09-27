@@ -1,0 +1,67 @@
+name: Deploy to ECS (GitOps)
+
+on:
+  push:
+    branches:
+      - gitops
+
+permissions:
+  id-token: write   # required so GitHub can request an OIDC token from AWS
+  contents: read    # required for actions/checkout to read the repo
+
+env:
+  AWS_REGION: us-east-1
+  ECR_BACKEND_REPO: tech-challenge-1-backend
+  ECR_FRONTEND_REPO: tech-challenge-1-frontend
+  ECS_CLUSTER: tech-challenge-1-cluster
+  ECS_BACKEND_SERVICE: tech-challenge-1-backend-service
+  ECS_FRONTEND_SERVICE: tech-challenge-1-frontend-service
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Assume AWS role via OIDC (no stored AWS keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::730335365330:role/github-actions-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $REGISTRY/$ECR_BACKEND_REPO:${{ github.sha }} -t $REGISTRY/$ECR_BACKEND_REPO:latest ./backend
+          docker push $REGISTRY/$ECR_BACKEND_REPO:${{ github.sha }}
+          docker push $REGISTRY/$ECR_BACKEND_REPO:latest
+
+      - name: Build and push frontend image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $REGISTRY/$ECR_FRONTEND_REPO:${{ github.sha }} -t $REGISTRY/$ECR_FRONTEND_REPO:latest ./frontend
+          docker push $REGISTRY/$ECR_FRONTEND_REPO:${{ github.sha }}
+          docker push $REGISTRY/$ECR_FRONTEND_REPO:latest
+
+      - name: Force new ECS deployment (backend)
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_BACKEND_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Force new ECS deployment (frontend)
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_FRONTEND_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
