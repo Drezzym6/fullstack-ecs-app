@@ -137,7 +137,17 @@ siege -c 250 -t 5M http://tech-challenge-1-alb-62754989.us-east-1.elb.amazonaws.
 
 ## 7. GitOps Branch (Bonus)
 
-A separate `gitops` branch replaces the Jenkins-triggered pipeline with GitHub Actions, using an OIDC identity provider so GitHub Actions can assume a scoped AWS IAM role without any long-lived AWS access keys stored in GitHub. See that branch's own workflow file for details.
+A separate `gitops` branch replaces the Jenkins-triggered pipeline with GitHub Actions, so the app can be deployed without Jenkins involved at all — proving the deploy logic isn't accidentally tied to one specific CI server.
+
+**Workflow file:** `.github/workflows/deploy.yml`, triggered on every push to the `gitops` branch. It performs the same steps as the Jenkins pipeline (build both Docker images, push to ECR, force a new ECS deployment on both services) but through GitHub's own runners instead of a self-hosted EC2 box.
+
+**Authentication — OIDC instead of stored AWS keys:**
+Rather than storing long-lived AWS access keys as GitHub secrets, this branch uses OpenID Connect (OIDC) federation:
+- An **IAM OIDC identity provider** (`token.actions.githubusercontent.com`) tells AWS to trust short-lived, signed identity tokens issued by GitHub.
+- An **IAM role** (`github-actions-deploy-role`) has a trust policy that only allows that identity provider to assume it, and only when the token's `sub` (subject) claim matches this exact repo and branch — so no other GitHub repo, and no other branch of this repo, can assume the role.
+- Each workflow run requests a fresh, minutes-long token from GitHub, trades it for temporary AWS credentials via `sts:AssumeRoleWithWebIdentity`, and those credentials expire on their own. Nothing long-lived is ever stored in GitHub.
+
+**A real debugging note worth keeping:** GitHub's OIDC tokens embed immutable numeric IDs alongside the human-readable org/repo names in the `sub` claim (e.g. `repo:Drezzym6@160346145/devops-code-challenge1@1375181663:ref:refs/heads/gitops`), while AWS's own IAM console wizard still generates trust policies using the plain-name format (`repo:Drezzym6/devops-code-challenge1:ref:refs/heads/gitops`). That mismatch causes a generic `AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity` error even when everything looks correct. It was root-caused using AWS CloudTrail's Event history (searching for the `AssumeRoleWithWebIdentity` event) to see the exact identity string AWS actually received, then fixing the trust policy's `sub` condition to match it exactly.
 
 ---
 
