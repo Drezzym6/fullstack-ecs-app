@@ -9,6 +9,8 @@ A React frontend and Express backend, containerized with Docker, deployed to AWS
 
 ## 1. Architecture Overview
 
+![Architecture Diagram](docs/architecture.png)
+
 ```
 GitHub (main branch)
       |
