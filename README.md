@@ -1,4 +1,4 @@
-# Tech Challenge 1 — Containerized React/Express App on AWS ECS Fargate
+# Full-Stack React/Express App on AWS ECS Fargate
 
 A React frontend and Express backend, containerized with Docker, deployed to AWS ECS on Fargate via Terraform, with CI/CD automated through a self-hosted Jenkins pipeline. The app autoscales under load and is reachable through a single public Application Load Balancer (ALB) URL.
 
@@ -155,4 +155,4 @@ Rather than storing long-lived AWS access keys as GitHub secrets, this branch us
 
 ## 8. Cleanup
 
-To avoid ongoing AWS charges after grading: `terraform destroy` from the `terraform/` directory, plus manual removal of the Jenkins EC2 instance's EBS volume and Elastic IP if not fully covered by destroy, and manual removal of any leftover ECR images.
+To avoid ongoing AWS charges when you're done: `terraform destroy` from the `terraform/` directory, plus manual removal of the Jenkins EC2 instance's EBS volume and Elastic IP if not fully covered by destroy, and manual removal of any leftover ECR images.

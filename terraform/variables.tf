@@ -1,7 +1,7 @@
 variable "project_name" {
   description = "Name prefix applied to all resources"
   type        = string
-  default     = "tech-challenge-1"
+  default     = "fullstack-ecs-app"
 }
 
 variable "vpc_cidr" {
